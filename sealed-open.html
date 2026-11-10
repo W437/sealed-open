@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'none'; form-action 'none'">
+<title>Open a Sealed Vault</title>
+<!--
+  sealed-open.html: opens a Sealed vault copy (a ".sealedvault" folder, or a .zip of one) with its recovery key, in this browser,
+  offline. No network: the page's own security policy forbids every connection. Everything is decrypted in this tab with the
+  browser's WebCrypto and written only where you choose.
+
+  The format is "Sealed: encryption and key handling", section 17 (and sections 2, 4, 6, 15 and Appendix A).
+  MIT License. Copyright (c) 2026 Loopware.
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files
+  (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify,
+  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+  NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+  CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<style>
+  :root { --bg: #f5f2ea; --card: #fffdf8; --ink: #1d1b17; --muted: #5d574c; --line: #ddd5c4; --accent: #8a6a2c; --bad: #9b2c22; --good: #2f6b3a; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #121110; --card: #1c1a17; --ink: #f1ece2; --muted: #b3aa99; --line: #34302a; --accent: #d1ad62; --bad: #f08a7e; --good: #8fd19a; }
+  }
+  :root[data-theme="dark"] { --bg: #121110; --card: #1c1a17; --ink: #f1ece2; --muted: #b3aa99; --line: #34302a; --accent: #d1ad62; --bad: #f08a7e; --good: #8fd19a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font: 600 28px/1.2 ui-serif, "New York", Georgia, serif; margin: 0 0 6px; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin: 0 0 16px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  label.pick { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; margin: 4px 8px 4px 0; min-height: 44px; }
+  label.pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  input[type=password], input[type=text] { width: 100%; font: 17px ui-monospace, Menlo, Consolas, monospace; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 12px 18px; min-height: 44px; background: var(--accent); color: #fff; cursor: pointer; margin: 10px 8px 0 0; }
+  button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: default; }
+  .status { margin-top: 10px; min-height: 1.5em; }
+  .bad { color: var(--bad); } .good { color: var(--good); }
+  ul.files { list-style: none; padding: 0; margin: 8px 0 0; max-height: 320px; overflow: auto; font-size: 14px; }
+  ul.files li { padding: 4px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  ul.files a { color: var(--accent); }
+  small, .muted { color: var(--muted); }
+  .chosen { font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Open a Sealed vault</h1>
+  <p class="lead">For a copy of a Sealed vault (a folder ending in <code>.sealedvault</code>, or a .zip of it) and its recovery key.
+    This page works offline and sends nothing anywhere: it decrypts in this browser tab and writes only where you choose.</p>
+
+  <section>
+    <h2>1 · The copy</h2>
+    <label class="pick">Choose the folder…<input id="pick-folder" type="file" webkitdirectory multiple></label>
+    <label class="pick">Choose a .zip…<input id="pick-zip" type="file" accept=".zip,application/zip"></label>
+    <div id="chosen" class="chosen"></div>
+    <p class="muted"><small>Some browsers (on phones especially) cannot pick a folder: zip the .sealedvault folder first (on a Mac,
+      Control-click it and choose Compress; in Files on iPhone, touch and hold it and choose Compress) and choose the .zip.</small></p>
+  </section>
+
+  <section>
+    <h2>2 · The recovery key</h2>
+    <input id="phrase" type="password" autocomplete="off" autocapitalize="characters" spellcheck="false"
+           placeholder="XXXXX-XXXXX-…" aria-label="Recovery key">
+    <label><input id="show" type="checkbox"> Show it</label>
+    <div><button id="open" disabled>Open</button></div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section id="result" hidden>
+    <h2>3 · Your files</h2>
+    <div id="summary"></div>
+    <button id="save-folder" class="secondary" hidden>Save into a folder…</button>
+    <button id="download-zip" class="secondary">Download everything (.zip)</button>
+    <ul id="files" class="files"></ul>
+  </section>
+</main>
+<script>
+"use strict";
+const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const enc = new TextEncoder();
+const $ = (id) => document.getElementById(id);
+const subtle = crypto.subtle;
+
+class Refused extends Error {}
+
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function equal(a, b) { if (a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a[i] ^ b[i]; return d === 0; }
+const be32 = (n) => new Uint8Array([n >>> 24 & 255, n >>> 16 & 255, n >>> 8 & 255, n & 255]);
+const u16 = (b, o) => (b[o] << 8) | b[o + 1];
+const u32 = (b, o) => ((b[o] << 24) >>> 0) + (b[o + 1] << 16) + (b[o + 2] << 8) + b[o + 3];
+
+// ---------------------------------------------------------------------------------------------------------------- the copy's files
+// A source answers read(name) -> Uint8Array, size(name), slice(name, start, end) and has(name), names relative to the .sealedvault.
+
+function folderSource(fileList) {
+  const files = new Map();
+  let root = null;
+  for (const f of fileList) {
+    const path = f.webkitRelativePath || f.name;
+    if (path === "manifest.sealed" || path.endsWith("/manifest.sealed")) {
+      if (root !== null) throw new Refused("the folder holds more than one copy of a vault: choose the .sealedvault folder itself");
+      root = path.slice(0, path.length - "manifest.sealed".length);
+    }
+  }
+  if (root === null) throw new Refused("there is no manifest.sealed in this folder: choose the .sealedvault folder");
+  for (const f of fileList) {
+    const path = f.webkitRelativePath || f.name;
+    if (path.startsWith(root)) files.set(path.slice(root.length), f);
+  }
+  return {
+    has: (n) => files.has(n),
+    size: (n) => files.get(n).size,
+    read: async (n) => new Uint8Array(await files.get(n).arrayBuffer()),
+    slice: async (n, s, e) => new Uint8Array(await files.get(n).slice(s, e).arrayBuffer()),
+  };
+}
+
+async function zipSource(file) {
+  const tailSize = Math.min(file.size, 65557 + 20);
+  const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
+  let eocd = -1;
+  for (let i = tail.length - 22; i >= 0; i--) if (tail[i] === 0x50 && tail[i + 1] === 0x4b && tail[i + 2] === 5 && tail[i + 3] === 6) { eocd = i; break; }
+  if (eocd < 0) throw new Refused("that file is not a zip");
+  const le16 = (b, o) => b[o] | (b[o + 1] << 8);
+  const le32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16)) + b[o + 3] * 16777216;
+  const le64 = (b, o) => le32(b, o) + le32(b, o + 4) * 4294967296;
+  let count = le16(tail, eocd + 10), cdSize = le32(tail, eocd + 12), cdOffset = le32(tail, eocd + 16);
+  if (cdOffset === 0xffffffff || count === 0xffff) {                      // zip64
+    const loc = eocd - 20;
+    if (loc < 0 || le32(tail, loc) !== 0x07064b50) throw new Refused("this zip is damaged");
+    const rec = new Uint8Array(await file.slice(le64(tail, loc + 8), le64(tail, loc + 8) + 56).arrayBuffer());
+    count = le64(rec, 32); cdSize = le64(rec, 40); cdOffset = le64(rec, 48);
+  }
+  const cd = new Uint8Array(await file.slice(cdOffset, cdOffset + cdSize).arrayBuffer());
+  const entries = new Map();
+  const dec = new TextDecoder();
+  for (let o = 0, i = 0; i < count; i++) {
+    if (le32(cd, o) !== 0x02014b50) throw new Refused("this zip is damaged");
+    const method = le16(cd, o + 10);
+    let csize = le32(cd, o + 20), usize = le32(cd, o + 24), local = le32(cd, o + 42);
+    const nameLen = le16(cd, o + 28), extraLen = le16(cd, o + 30), commentLen = le16(cd, o + 32);
+    const name = dec.decode(cd.subarray(o + 46, o + 46 + nameLen));
+    for (let e = o + 46 + nameLen; e < o + 46 + nameLen + extraLen;) {
+      const id = le16(cd, e), len = le16(cd, e + 2);
+      if (id === 1) {
+        let p = e + 4;
+        if (usize === 0xffffffff) { usize = le64(cd, p); p += 8; }
+        if (csize === 0xffffffff) { csize = le64(cd, p); p += 8; }
+        if (local === 0xffffffff) { local = le64(cd, p); p += 8; }
+      }
+      e += 4 + len;
+    }
+    entries.set(name, { method, csize, usize, local });
+    o += 46 + nameLen + extraLen + commentLen;
+  }
+  let root = null;
+  for (const name of entries.keys()) {
+    if (name.includes("__MACOSX")) continue;
+    if (name === "manifest.sealed" || name.endsWith("/manifest.sealed")) {
+      if (root !== null) throw new Refused("the zip holds more than one copy of a vault");
+      root = name.slice(0, name.length - "manifest.sealed".length);
+    }
+  }
+  if (root === null) throw new Refused("there is no manifest.sealed in this zip");
+  const cache = new Map();
+  async function dataStart(entry) {
+    const head = new Uint8Array(await file.slice(entry.local, entry.local + 30).arrayBuffer());
+    if (le32(head, 0) !== 0x04034b50) throw new Refused("this zip is damaged");
+    return entry.local + 30 + le16(head, 26) + le16(head, 28);
+  }
+  async function whole(name) {
+    const entry = entries.get(root + name);
+    if (cache.has(name)) return cache.get(name);
+    const start = await dataStart(entry);
+    const raw = file.slice(start, start + entry.csize);
+    let bytes;
+    if (entry.method === 0) bytes = new Uint8Array(await raw.arrayBuffer());
+    else if (entry.method === 8) bytes = new Uint8Array(await new Response(raw.stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    else throw new Refused("this zip uses a compression this page cannot read");
+    if (name === "manifest.sealed") cache.set(name, bytes);
+    return bytes;
+  }
+  return {
+    has: (n) => entries.has(root + n),
+    size: (n) => entries.get(root + n).usize,
+    read: whole,
+    slice: async (n, s, e) => {
+      const entry = entries.get(root + n);
+      if (entry.method === 0) { const start = await dataStart(entry); return new Uint8Array(await file.slice(start + s, start + Math.min(e, entry.usize)).arrayBuffer()); }
+      return (await whole(n)).slice(s, e);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------- the key
+function phraseBytes(text) {
+  const out = [];
+  let bits = 0, value = 0;
+  for (const ch of text.toUpperCase()) {
+    if (!/^[A-Z0-9]$/.test(ch)) continue;
+    const c = ch === "O" ? "0" : (ch === "I" || ch === "L") ? "1" : ch;
+    const v = ALPHABET.indexOf(c);
+    if (v < 0) throw new Refused("the recovery key has a letter that is not in it (" + c + ")");
+    value = ((value << 5) | v) & 0xffff; bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((value >> bits) & 255); }
+  }
+  return new Uint8Array(out);
+}
+const sha256 = async (b) => new Uint8Array(await subtle.digest("SHA-256", b));
+async function readPhrase(text) {
+  const raw = phraseBytes(text);
+  if (raw.length === 34) {
+    if (!equal((await sha256(raw.slice(0, 32))).slice(0, 2), raw.slice(32))) throw new Refused("the recovery key has a typo (its check does not fit)");
+    return { v: 1, key: raw.slice(0, 32) };
+  }
+  if (raw.length === 37 && raw[0] === 2) {
+    if (!equal((await sha256(raw.slice(0, 33))).slice(0, 4), raw.slice(33))) throw new Refused("the recovery key has a typo (its check does not fit)");
+    return { v: 2, key: raw.slice(1, 33) };
+  }
+  throw new Refused("that is not a whole recovery key (it has 11 or 12 groups of five)");
+}
+async function gcmOpen(keyBytes, nonce, sealed, aad) {
+  const key = await subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const params = { name: "AES-GCM", iv: nonce, tagLength: 128 };
+  if (aad) params.additionalData = aad;
+  return new Uint8Array(await subtle.decrypt(params, key, sealed));
+}
+async function hmac(keyBytes, message) {
+  const key = await subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await subtle.sign("HMAC", key, message));
+}
+async function recoveryKeyFor(k, n) {
+  const key = await subtle.importKey("raw", k, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: enc.encode("sealed.recovery.v2.salt"),
+    info: concat(enc.encode("sealed.recovery.v2"), be32(n)) }, key, 256));
+}
+async function openEnvelope(env, r) {
+  if (env.length !== 70 || String.fromCharCode(...env.slice(0, 4)) !== "BBKE" || env[4] !== 1 || env[5] !== 1) throw new Refused("the copy's recovery envelope is damaged");
+  const n = u32(env, 6);
+  if (n === 0) throw new Refused("the copy's recovery envelope is damaged");
+  let k;
+  try { k = await gcmOpen(r, env.slice(10, 22), env.slice(22), concat(enc.encode("sealed.envelope.v1"), new Uint8Array([1]), env.slice(6, 10))); }
+  catch { throw new Refused("this recovery key does not open this copy (another vault's key, or one that was replaced)"); }
+  if (k.length !== 32 || !equal(await recoveryKeyFor(k, n), r)) throw new Refused("this recovery key does not open this copy");
+  return k;
+}
+
+// ----------------------------------------------------------------------------------------------------------------- manifest (17)
+function readHeader(m) {
+  if (m.length < 39 || String.fromCharCode(...m.slice(0, 4)) !== "BBOV") throw new Refused("manifest.sealed is not the manifest of a Sealed vault copy");
+  if (m[4] !== 1) throw new Refused("this copy was made by a newer Sealed (format version " + m[4] + "); get a newer reader");
+  const envLen = u16(m, 37);
+  if ((envLen !== 0 && envLen !== 70) || m.length < 39 + envLen + 28) throw new Refused("manifest.sealed is damaged");
+  return { header: m.slice(0, 39 + envLen), check: m.slice(5, 37), envelope: envLen ? m.slice(39, 39 + envLen) : null };
+}
+async function vaultKey(phrase, h) {
+  const p = await readPhrase(phrase);
+  let k = p.key;
+  if (p.v === 2) {
+    if (!h.envelope) throw new Refused("this copy's vault has a recovery key of 11 groups; the key typed has 12");
+    k = await openEnvelope(h.envelope, p.key);
+  }
+  if (!equal(await hmac(k, enc.encode("sealed.recovery.keycheck.v1")), h.check)) throw new Refused("this recovery key is not this vault's");
+  return k;
+}
+async function openBody(m, h, k) {
+  const sealed = m.slice(h.header.length);
+  let json;
+  try { json = await gcmOpen(k, sealed.slice(0, 12), sealed.slice(12), concat(enc.encode("sealed.openvault.v1"), h.header)); }
+  catch { throw new Refused("the key is right, but manifest.sealed is damaged"); }
+  const doc = JSON.parse(new TextDecoder().decode(json));
+  for (const key of ["items", "notes", "records", "stacks"]) {
+    if (!Array.isArray(doc[key]) || !doc[key].every((x) => x && typeof x === "object" && typeof x.id === "string")) throw new Refused("manifest.sealed is not what it should hold");
+  }
+  if (!doc.items.every((x) => typeof x.inCopy === "boolean")) throw new Refused("manifest.sealed is not what it should hold");
+  return doc;
+}
+
+// ------------------------------------------------------------------------------------------------------------------ blobs (4)
+async function openBlob(source, name, k) {
+  const size = source.size(name);
+  const head = await source.slice(name, 0, 71);
+  if (head.length < 71 || String.fromCharCode(...head.slice(0, 4)) !== "BBXV" || head[4] !== 1) throw new Refused("not a Sealed file");
+  if (u16(head, 5) !== 60) throw new Refused("damaged header");
+  let dek;
+  try { dek = await gcmOpen(k, head.slice(7, 19), head.slice(19, 67)); } catch { throw new Refused("its file key does not open with this vault's key"); }
+  if (dek.length !== 32) throw new Refused("damaged file key");
+  const chunkSize = u32(head, 67);
+  if (chunkSize < 1 || chunkSize > 4194304) throw new Refused("damaged chunk size");
+  const key = await subtle.importKey("raw", dek, "AES-GCM", false, ["decrypt"]);
+  const parts = [];
+  let offset = 71, index = 0, crc = 0xffffffff, length = 0;
+  if (offset + 4 > size) throw new Refused("no content");
+  for (;;) {
+    const lenBytes = await source.slice(name, offset, offset + 4);
+    if (lenBytes.length !== 4) throw new Refused("the file ends early");
+    const sealedLen = u32(lenBytes, 0);
+    if (sealedLen < 16 || sealedLen > chunkSize + 16 || offset + 4 + sealedLen > size) throw new Refused("damaged chunk");
+    const sealed = await source.slice(name, offset + 4, offset + 4 + sealedLen);
+    offset += 4 + sealedLen;
+    const last = offset === size;
+    if (!last && offset + 4 > size) throw new Refused("the file ends inside a chunk");
+    const nonce = new Uint8Array(12);
+    let i = index;
+    for (let b = 7; b >= 0; b--) { nonce[b] = i % 256; i = Math.floor(i / 256); }
+    nonce[11] = last ? 1 : 0;
+    let plain;
+    try { plain = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, key, sealed)); }
+    catch { throw new Refused("the file is damaged or incomplete"); }
+    crc = crc32(plain, crc); length += plain.length;
+    parts.push(plain);
+    if (last) break;
+    index++;
+  }
+  return { blob: new Blob(parts), crc: (crc ^ 0xffffffff) >>> 0, length };
+}
+
+// ----------------------------------------------------------------------------------------------------------------- notes, records
+function rtfdFiles(data) {
+  try {
+    if (String.fromCharCode(...data.slice(0, 4)) !== "rtfd") return null;
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const count = dv.getUint32(12, true);
+    if (count > 10000) return null;
+    let o = 16;
+    const names = [];
+    for (let i = 0; i < count; i++) { const l = dv.getUint32(o, true); o += 4; names.push(new TextDecoder().decode(data.slice(o, o + l))); o += l; }
+    const lengths = [];
+    for (let i = 0; i < count; i++) { lengths.push(dv.getUint32(o, true)); o += 4; }
+    const files = new Map();
+    for (let i = 0; i < count; i++) {
+      const kind = dv.getUint32(o, true), size = dv.getUint32(o + 4, true);
+      if (names[i] !== "." && kind === 1 && !names[i].includes("/") && !names[i].startsWith("..")) files.set(names[i], data.slice(o + 8, o + 8 + size));
+      o += lengths[i];
+    }
+    return files.has("TXT.rtf") ? files : null;
+  } catch { return null; }
+}
+const RECORD_TYPES = { login: "Login", totp: "Two-factor code", card: "Card", bankAccount: "Bank account", idDocument: "ID", wifi: "Wi-Fi",
+  recoveryCode: "Recovery codes", licenseKey: "License key", contact: "Contact", custom: "Record" };
+const RECORD_FIELDS = [["username", "Username"], ["password", "Password"], ["website", "Website"], ["cardNumber", "Card number"],
+  ["expirationDate", "Expires"], ["cvv", "Security code"], ["accountNumber", "Account number"], ["wifiSecurity", "Wi-Fi security"],
+  ["company", "Company"], ["phone", "Phone"], ["email", "Email"], ["address", "Address"], ["notes", "Notes"]];
+function recordText(r) {
+  const kind = RECORD_TYPES[r.recordTypeRaw] || "Record";
+  const lines = [r.title || kind, "Type: " + kind];
+  const f = r.payload || {};
+  for (const [key, label] of RECORD_FIELDS) if (typeof f[key] === "string" && f[key]) lines.push(label + ": " + f[key]);
+  for (const c of f.customFields || []) if (c && c.value) lines.push((c.label || "Field") + ": " + c.value);
+  const tags = (f.tags || []).filter((t) => typeof t === "string");
+  if (tags.length) lines.push("Tags: " + tags.join(", "));
+  return lines.join("\n") + "\n";
+}
+
+// ---------------------------------------------------------------------------------------------------------------------- names
+const MIME = { "image/jpeg": "jpg", "image/heic": "heic", "image/heif": "heif", "image/png": "png", "image/gif": "gif", "image/webp": "webp",
+  "image/tiff": "tiff", "video/quicktime": "mov", "video/mp4": "mp4", "video/x-m4v": "m4v", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+  "audio/mpeg": "mp3", "audio/wav": "wav", "application/pdf": "pdf", "text/plain": "txt" };
+const RESERVED = new Set(["CON", "PRN", "AUX", "NUL", ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((i) => ["COM" + i, "LPT" + i])]);
+function safeName(name, fallback = "Untitled") {
+  let n = (name || "").normalize("NFC").replace(/[\/\\:*?"<>|\u0000-\u001f\u007f]/g, "_").trim().replace(/^\.+/, "").replace(/[. ]+$/, "");
+  if (!n) n = fallback;
+  if (RESERVED.has(n.split(".")[0].toUpperCase())) n = "_" + n;
+  while (enc.encode(n).length > 120) n = n.slice(0, -1);
+  return n;
+}
+function itemFileName(item) {
+  if (item.fileName) return safeName(item.fileName);
+  let base = item.name || "Untitled";
+  const ext = MIME[String(item.mimeType || "").toLowerCase()];
+  if (ext && !base.toLowerCase().endsWith("." + ext)) base += "." + ext;
+  return safeName(base);
+}
+function makeNamer() {
+  const taken = new Set();
+  return (folder, name) => {
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+    let candidate = name, n = 1;
+    while (taken.has((folder + "/" + candidate).toLowerCase())) candidate = stem + " (" + (++n) + ")" + ext;
+    taken.add((folder + "/" + candidate).toLowerCase());
+    return folder ? folder + "/" + candidate : candidate;
+  };
+}
+function stackPaths(stacks) {
+  const byId = new Map(stacks.filter((s) => s && s.id).map((s) => [s.id, s]));
+  const paths = new Map();
+  for (const id of byId.keys()) {
+    const parts = [], seen = new Set();
+    let s = byId.get(id);
+    while (s && !seen.has(s.id)) { seen.add(s.id); parts.unshift(safeName(s.name, "Stack")); s = byId.get(s.parentID); }
+    paths.set(id, parts.join("/"));
+  }
+  return paths;
+}
+const folderFor = (entry, paths) => { for (const id of entry.albumIds || []) if (paths.has(id)) return paths.get(id); return ""; };
+const REF = 978307200;
+
+// ------------------------------------------------------------------------------------------------------------------------- open
+async function openVault(source, phrase, progress) {
+  const manifest = await source.read("manifest.sealed");
+  const h = readHeader(manifest);
+  const k = await vaultKey(phrase, h);
+  progress("The recovery key opens this vault. Opening…", "good");
+  const doc = await openBody(manifest, h, k);
+  const name = makeNamer(), paths = stackPaths(doc.stacks);
+  const out = [], report = { onlyInICloudBackup: [], missing: [], notOpened: [] };
+  const counts = { items: 0, notes: 0, records: 0 };
+  let done = 0;
+  for (const item of doc.items) {
+    if (!item || typeof item !== "object") continue;
+    const label = item.name || item.id || "an item";
+    if (!item.inCopy) { report.onlyInICloudBackup.push(label); continue; }
+    const blob = item.encryptedFileName;
+    if (typeof blob !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(blob)) { report.notOpened.push(label + ": its file name is not one Sealed makes"); continue; }
+    if (!source.has("blobs/" + blob)) {
+      report.missing.push(label + (source.has("blobs/." + blob + ".icloud") ? ": iCloud Drive has not downloaded it yet" : ": its file is missing"));
+      continue;
+    }
+    try {
+      const opened = await openBlob(source, "blobs/" + blob, k);
+      const stamp = typeof item.originalCreationDate === "number" ? item.originalCreationDate : item.createdAt;
+      out.push({ id: item.id, kind: "item", path: name(folderFor(item, paths), itemFileName(item)), blob: opened.blob, crc: opened.crc,
+                 size: opened.length, time: typeof stamp === "number" ? (stamp + REF) * 1000 : Date.now() });
+      counts.items++;
+    } catch (e) { report.notOpened.push(label + ": " + (e instanceof Refused ? e.message : "could not be read")); }
+    progress("Opened " + (++done) + " of " + doc.items.length + " files…", "good");
+  }
+  for (const note of doc.notes) {
+    if (!note || typeof note !== "object") continue;
+    const title = safeName(note.title || (note.body || "").split("\n")[0].slice(0, 60), "Untitled note");
+    const where = folderFor(note, paths);
+    const time = typeof note.updatedAt === "number" ? (note.updatedAt + REF) * 1000 : Date.now();
+    out.push(await fileEntry({ id: note.id, kind: "note", path: name(where, title + ".txt"), time }, enc.encode(note.body || "")));
+    if (typeof note.rtfd === "string" && note.rtfd) {
+      const bin = Uint8Array.from(atob(note.rtfd), (c) => c.charCodeAt(0));
+      const files = rtfdFiles(bin);
+      if (files && files.size === 1) out.push(await fileEntry({ id: note.id, kind: "rich", path: name(where, title + ".rtf"), time }, files.get("TXT.rtf")));
+      else if (files) {
+        const folder = name(where, title + ".rtfd");
+        for (const [n, data] of files) out.push(await fileEntry({ id: note.id, kind: "rich", path: folder + "/" + safeName(n), time }, data));
+      }
+    }
+    counts.notes++;
+  }
+  const records = doc.records.filter((r) => r && typeof r === "object");
+  for (const r of records) {
+    const title = safeName(r.title || RECORD_TYPES[r.recordTypeRaw] || "Record");
+    out.push(await fileEntry({ id: r.id, kind: "record", path: name(folderFor(r, paths), title + ".txt"), time: Date.now() }, enc.encode(recordText(r))));
+    counts.records++;
+  }
+  if (records.length) out.push(await fileEntry({ kind: "records", path: name("", "Records.json"), time: Date.now() }, enc.encode(JSON.stringify(records, null, 2))));
+  const lines = ["Opened with sealed-open.html.", counts.items + " files, " + counts.notes + " notes, " + counts.records + " records."];
+  for (const [key, title] of [["onlyInICloudBackup", "Only in the iCloud backup (Space Saver), not in this copy"], ["missing", "Missing from this copy"], ["notOpened", "Could not be opened"]]) {
+    if (report[key].length) lines.push("", title + " (" + report[key].length + "):", ...report[key].map((x) => "  " + x));
+  }
+  out.push(await fileEntry({ kind: "report", path: name("", "Report.txt"), time: Date.now() }, enc.encode(lines.join("\n") + "\n")));
+  return { files: out, counts, report, lines, savedAt: doc.savedAt };
+}
+async function fileEntry(entry, bytes) { return Object.assign(entry, { blob: new Blob([bytes]), crc: (crc32(bytes, 0xffffffff) ^ 0xffffffff) >>> 0, size: bytes.length }); }
+
+// -------------------------------------------------------------------------------------------------------------------- zip out
+const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(bytes, crc) { for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ (crc >>> 8); return crc >>> 0; }
+function zipOf(files) {
+  const parts = [], central = [];
+  let offset = 0;
+  const le = (n, bytes) => { const b = new Uint8Array(bytes); for (let i = 0; i < bytes; i++) { b[i] = n % 256; n = Math.floor(n / 256); } return b; };
+  for (const f of files) {
+    const nameBytes = enc.encode("Opened vault/" + f.path);
+    const d = new Date(f.time);
+    const dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2);
+    const dosDate = (Math.max(0, d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    if (f.size > 0xfffffffe || offset > 0xfffffffe) throw new Refused("too large for one .zip from a browser: use Save into a folder, or sealed-open.py");
+    const common = concat(le(20, 2), le(0x0800, 2), le(0, 2), le(dosTime, 2), le(dosDate, 2), le(f.crc, 4), le(f.size, 4), le(f.size, 4), le(nameBytes.length, 2), le(0, 2));
+    parts.push(concat(le(0x04034b50, 4), common, nameBytes), f.blob);
+    central.push(concat(le(0x02014b50, 4), le(20, 2), common, le(0, 2), le(0, 2), le(0, 2), le(0, 4), le(offset, 4), nameBytes));
+    offset += 30 + nameBytes.length + f.size;
+  }
+  const cd = concat(...central);
+  parts.push(cd, concat(le(0x06054b50, 4), le(0, 4), le(files.length, 2), le(files.length, 2), le(cd.length, 4), le(offset, 4), le(0, 2)));
+  return new Blob(parts, { type: "application/zip" });
+}
+
+// ------------------------------------------------------------------------------------------------------------------------- page
+let source = null, result = null;
+function status(text, cls) { const s = $("status"); s.textContent = text; s.className = "status " + (cls || ""); }
+function ready() { $("open").disabled = !(source && $("phrase").value.trim()); }
+$("pick-folder").addEventListener("change", (e) => {
+  try { source = folderSource(e.target.files); $("chosen").textContent = "Folder chosen (" + e.target.files.length + " files)."; status(""); }
+  catch (err) { source = null; status(err.message, "bad"); }
+  ready();
+});
+$("pick-zip").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try { source = await zipSource(f); $("chosen").textContent = "Zip chosen: " + f.name; status(""); }
+  catch (err) { source = null; status(err instanceof Refused ? err.message : "That zip could not be read.", "bad"); }
+  ready();
+});
+$("phrase").addEventListener("input", ready);
+$("show").addEventListener("change", (e) => { $("phrase").type = e.target.checked ? "text" : "password"; });
+$("open").addEventListener("click", async () => {
+  $("open").disabled = true;
+  $("result").hidden = true;
+  try {
+    result = await openVault(source, $("phrase").value, status);
+    window.sealedOpenResult = { counts: result.counts, report: result.report, files: result.files.map((f) => ({ id: f.id, kind: f.kind, path: f.path, size: f.size })) };
+    status("Done.", "good");
+    $("summary").textContent = result.lines.slice(1).join(" ");
+    const list = $("files");
+    list.textContent = "";
+    for (const f of result.files) {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.textContent = f.path; a.download = f.path.split("/").pop(); a.href = URL.createObjectURL(f.blob);
+      li.appendChild(a); list.appendChild(li);
+    }
+    $("save-folder").hidden = !("showDirectoryPicker" in window);
+    $("result").hidden = false;
+  } catch (e) {
+    status("Not opened: " + (e instanceof Refused ? e.message : "something in the copy could not be read") + ".", "bad");
+    if (!(e instanceof Refused)) console.error(e);
+  } finally {
+    $("phrase").value = ""; // the key does not stay on the page
+    ready();
+  }
+});
+$("download-zip").addEventListener("click", () => {
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(zipOf(result.files)); a.download = "Opened vault.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { status(e.message, "bad"); }
+});
+$("save-folder").addEventListener("click", async () => {
+  try {
+    const root = await window.showDirectoryPicker({ mode: "readwrite" });
+    for (const f of result.files) {
+      let dir = root;
+      const parts = f.path.split("/");
+      for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: true });
+      const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true });
+      const w = await handle.createWritable(); await w.write(f.blob); await w.close();
+    }
+    status("Saved " + result.files.length + " files.", "good");
+  } catch (e) { if (e.name !== "AbortError") status("Could not save into that folder.", "bad"); }
+});
+</script>
+</body>
+</html>
